@@ -18,20 +18,18 @@
 #include <vector>
 #include <algorithm>
 #include <math.h>
+#include <Atomic/Math/Vector2.h>
+#include <Atomic/Math/Vector3.h>
+#include <Atomic/Scene/Node.h>
+#include <Atomic/Graphics/Geometry.h>
 
-struct csgjs_vector
-{
-	float x, y, z;
-
-	csgjs_vector() : x(0.0f), y(0.0f), z(0.0f) {}
-	explicit csgjs_vector(float x, float y, float z) : x(x), y(y), z(z) {}
-};
 
 struct csgjs_vertex
 {
-	csgjs_vector pos;
-	csgjs_vector normal;
-	csgjs_vector uv;
+    Atomic::Vector3 pos;
+    Atomic::Vector3 normal;
+    Atomic::Vector2 uv;
+    unsigned color;
 };
 
 struct csgjs_model
@@ -47,3 +45,7 @@ struct csgjs_model
 csgjs_model csgjs_union(const csgjs_model & a, const csgjs_model & b);
 csgjs_model csgjs_intersection(const csgjs_model & a, const csgjs_model & b);
 csgjs_model csgjs_difference(const csgjs_model & a, const csgjs_model & b);
+
+Atomic::Geometry* csgjs_union(Atomic::Node* a, Atomic::Node* b);
+Atomic::Geometry* csgjs_intersection(Atomic::Node* a, Atomic::Node* b);
+Atomic::Geometry* csgjs_difference(Atomic::Node* a, Atomic::Node* b);

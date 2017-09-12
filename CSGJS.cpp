@@ -1,4 +1,9 @@
 #include "CSGJS.h"
+#include <Atomic/Graphics/StaticModel.h>
+#include <Atomic/Graphics/VertexBuffer.h>
+#include <Atomic/Graphics/IndexBuffer.h>
+
+using namespace Atomic;
 
 // `CSG.Plane.EPSILON` is the tolerance used by `splitPolygon()` to decide if a
 // point is on the plane.
@@ -11,11 +16,11 @@ struct csgjs_node;
 // Represents a plane in 3D space.
 struct csgjs_plane
 {
-    csgjs_vector normal;
+    Vector3 normal;
     float w;
 
     csgjs_plane();
-    csgjs_plane(const csgjs_vector & a, const csgjs_vector & b, const csgjs_vector & c);
+    csgjs_plane(const Vector3 & a, const Vector3 & b, const Vector3 & c);
     bool ok() const;
     void flip();
     void splitPolygon(const csgjs_polygon & polygon, std::vector<csgjs_polygon> & coplanarFront, std::vector<csgjs_polygon> & coplanarBack, std::vector<csgjs_polygon> & front, std::vector<csgjs_polygon> & back) const;
@@ -63,26 +68,13 @@ struct csgjs_csgnode
     std::vector<csgjs_polygon> allPolygons() const;
 };
 
-// Vector implementation
-
-inline static csgjs_vector operator + (const csgjs_vector & a, const csgjs_vector & b) { return csgjs_vector(a.x + b.x, a.y + b.y, a.z + b.z); }
-inline static csgjs_vector operator - (const csgjs_vector & a, const csgjs_vector & b) { return csgjs_vector(a.x - b.x, a.y - b.y, a.z - b.z); }
-inline static csgjs_vector operator * (const csgjs_vector & a, float b) { return csgjs_vector(a.x * b, a.y * b, a.z * b); }
-inline static csgjs_vector operator / (const csgjs_vector & a, float b) { return a * (1.0f / b); }
-inline static float dot(const csgjs_vector & a, const csgjs_vector & b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-inline static csgjs_vector lerp(const csgjs_vector & a, const csgjs_vector & b, float v) { return a + (b - a) * v; }
-inline static csgjs_vector negate(const csgjs_vector & a) { return a * -1.0f; }
-inline static float length(const csgjs_vector & a) { return sqrtf(dot(a, a)); }
-inline static csgjs_vector unit(const csgjs_vector & a) { return a / length(a); }
-inline static csgjs_vector cross(const csgjs_vector & a, const csgjs_vector & b) { return csgjs_vector(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
-
 // Vertex implementation
 
 // Invert all orientation-specific data (e.g. vertex normal). Called when the
 // orientation of a polygon is flipped.
 inline static csgjs_vertex flip(csgjs_vertex v)
 {
-    v.normal = negate(v.normal);
+    v.normal = -v.normal;
     return v;
 }
 
@@ -92,9 +84,9 @@ inline static csgjs_vertex flip(csgjs_vertex v)
 inline static csgjs_vertex interpolate(const csgjs_vertex & a, const csgjs_vertex & b, float t)
 {
     csgjs_vertex ret;
-    ret.pos = lerp(a.pos, b.pos, t);
-    ret.normal = lerp(a.normal, b.normal, t);
-    ret.uv = lerp(a.uv, b.uv, t);
+    ret.pos = Lerp(a.pos, b.pos, t);
+    ret.normal = Lerp(a.normal, b.normal, t);
+    ret.uv = Lerp(a.uv, b.uv, t);
     return ret;
 }
 
@@ -106,19 +98,19 @@ csgjs_plane::csgjs_plane() : normal(), w(0.0f)
 
 bool csgjs_plane::ok() const
 {
-    return length(this->normal) > 0.0f;
+    return this->normal.Length() > 0.0f;
 }
 
 void csgjs_plane::flip()
 {
-    this->normal = negate(this->normal);
+    this->normal = -this->normal;
     this->w *= -1.0f;
 }
 
-csgjs_plane::csgjs_plane(const csgjs_vector & a, const csgjs_vector & b, const csgjs_vector & c)
+csgjs_plane::csgjs_plane(const Vector3 & a, const Vector3 & b, const Vector3 & c)
 {
-    this->normal = unit(cross(b - a, c - a));
-    this->w = dot(this->normal, a);
+    this->normal = (b - a).CrossProduct(c - a).Normalized();
+    this->w = this->normal.DotProduct(a);
 }
 
 // Split `polygon` by this plane if needed, then put the polygon or polygon
@@ -143,7 +135,7 @@ void csgjs_plane::splitPolygon(const csgjs_polygon & polygon, std::vector<csgjs_
 
     for (size_t i = 0; i < polygon.vertices.size(); i++)
     {
-        float t = dot(this->normal, polygon.vertices[i].pos) - this->w;
+        float t = this->normal.DotProduct(polygon.vertices[i].pos) - this->w;
         int type = (t < -csgjs_EPSILON) ? BACK : ((t > csgjs_EPSILON) ? FRONT : COPLANAR);
         polygonType |= type;
         types.push_back(type);
@@ -154,7 +146,7 @@ void csgjs_plane::splitPolygon(const csgjs_polygon & polygon, std::vector<csgjs_
     {
     case COPLANAR:
     {
-        if (dot(this->normal, polygon.plane.normal) > 0)
+        if (this->normal.DotProduct(polygon.plane.normal) > 0)
             coplanarFront.push_back(polygon);
         else
             coplanarBack.push_back(polygon);
@@ -182,7 +174,7 @@ void csgjs_plane::splitPolygon(const csgjs_polygon & polygon, std::vector<csgjs_
             if (ti != FRONT) b.push_back(vi);
             if ((ti | tj) == SPANNING)
             {
-                float t = (this->w - dot(this->normal, vi.pos)) / dot(this->normal, vj.pos - vi.pos);
+                float t = (this->w - this->normal.DotProduct(vi.pos)) / this->normal.DotProduct(vj.pos - vi.pos);
                 csgjs_vertex v = interpolate(vi, vj, t);
                 f.push_back(v);
                 b.push_back(v);
@@ -201,7 +193,7 @@ void csgjs_polygon::flip()
 {
     std::reverse(vertices.begin(), vertices.end());
     for (size_t i = 0; i < vertices.size(); i++)
-        vertices[i].normal = negate(vertices[i].normal);
+        vertices[i].normal = -vertices[i].normal;
     plane.flip();
 }
 
@@ -479,32 +471,42 @@ csgjs_csgnode::~csgjs_csgnode()
 inline static std::vector<csgjs_polygon> csgjs_modelToPolygons(const csgjs_model & model)
 {
     std::vector<csgjs_polygon> list;
+    list.reserve(model.indices.size());
+
     for (size_t i = 0; i < model.indices.size(); i+= 3)
     {
         std::vector<csgjs_vertex> triangle;
+        triangle.reserve(3);
+
         for (int j = 0; j < 3; j++)
-        {
-            csgjs_vertex v = model.vertices[model.indices[i + j]];
-            triangle.push_back(v);
-        }
+            triangle.emplace_back(model.vertices[model.indices[i + j]]);
+
         list.push_back(csgjs_polygon(triangle));
     }
     return list;
 }
 
-inline static csgjs_model csgjs_modelFromPolygons(const std::vector<csgjs_polygon> & polygons)
+csgjs_model csgjs_modelFromPolygons(const std::vector<csgjs_polygon> & polygons)
 {
     csgjs_model model;
     int p = 0;
+    model.vertices.reserve(polygons.size() * 3);
+    model.indices.reserve(polygons.size() * 3);
+
     for (size_t i = 0; i < polygons.size(); i++)
     {
         const csgjs_polygon & poly = polygons[i];
+
+        for (size_t j = 0; j < poly.vertices.size(); j++)
+            model.vertices.push_back(poly.vertices[j]);
+
         for (size_t j = 2; j < poly.vertices.size(); j++)
         {
-            model.vertices.push_back(poly.vertices[0]);		model.indices.push_back(p++);
-            model.vertices.push_back(poly.vertices[j - 1]);	model.indices.push_back(p++);
-            model.vertices.push_back(poly.vertices[j]);		model.indices.push_back(p++);
+            model.indices.push_back(p);
+            model.indices.push_back(p + j - 1);
+            model.indices.push_back(p + j);
         }
+        p += poly.vertices.size();
     }
     return model;
 }
@@ -534,6 +536,220 @@ csgjs_model csgjs_intersection(const csgjs_model & a, const csgjs_model & b)
 }
 
 csgjs_model csgjs_difference(const csgjs_model & a, const csgjs_model & b)
+{
+    return csgjs_operation(a, b, csg_subtract);
+}
+
+std::vector<csgjs_polygon> csgjs_modelToPolygons(Atomic::Node* node, const Matrix3x4& t=Matrix3x4::IDENTITY)
+{
+    std::vector<csgjs_polygon> list;
+
+    // Transform will be applied to vertices and normals.
+    auto static_model = node->GetComponent<StaticModel>();
+    auto geom = static_model->GetLodGeometry(0, 0);
+
+    assert(geom->GetNumVertexBuffers() == 1);    // TODO
+
+    auto ib = geom->GetIndexBuffer();
+    auto vb = geom->GetVertexBuffer(0);
+
+    auto elements = vb->GetElements();
+    auto vertexSize = vb->GetVertexSize();
+    auto indexSize = ib->GetIndexSize();
+    auto vertexData = vb->GetShadowData();
+
+    for (auto i = 0; i < ib->GetIndexCount(); i += 3)
+    {
+        std::vector<csgjs_vertex> triangle(3);
+
+        for (int j = 0; j < 3; j++)
+        {
+            unsigned index = 0;
+            if (indexSize > sizeof(uint16_t))
+                index = *(uint32_t*)(ib->GetShadowData() + (i + j) * indexSize);
+            else
+                index = *(uint16_t*)(ib->GetShadowData() + (i + j) * indexSize);
+
+            auto& vertex = triangle[j];
+            unsigned char* vertexInData = &vertexData[vertexSize * index];
+            for (unsigned k = 0; k < elements.Size(); k++)
+            {
+                const auto& el = elements.At(k);
+                switch (el.semantic_)
+                {
+                case SEM_POSITION:
+                {
+                    assert(el.type_ == TYPE_VECTOR3);
+                    vertex.pos = t.Rotation() * (t.Translation() + (*reinterpret_cast<Vector3*>(vertexInData + el.offset_)) * t.Scale());
+                    break;
+                }
+                case SEM_NORMAL:
+                {
+                    assert(el.type_ == TYPE_VECTOR3);
+                    vertex.normal = t.Rotation() * (*reinterpret_cast<Vector3*>(vertexInData + el.offset_));
+                    break;
+                }
+                case SEM_TEXCOORD:
+                {
+                    assert(el.type_ == TYPE_VECTOR2);
+                    vertex.uv = *reinterpret_cast<Vector2*>(vertexInData + el.offset_);
+                    break;
+                }
+                case SEM_COLOR:
+                {
+                    assert(el.type_ == TYPE_UBYTE4_NORM);
+                    vertex.color = *reinterpret_cast<unsigned*>(vertexInData + el.offset_);
+                    break;
+                }
+                default:
+                    break;
+                }
+            }
+        }
+        list.emplace_back(csgjs_polygon(triangle));
+    }
+
+    return list;
+}
+
+template<typename T>
+inline unsigned char* csgjs_set_indices(void* indexData, size_t numVertices, size_t p)
+{
+    auto indices = reinterpret_cast<T*>(indexData);
+    for (unsigned j = 2; j < numVertices; j++)
+    {
+        indices[0] = (T)p;
+        indices[1] = (T)(p + j - 1);
+        indices[2] = (T)(p + j);
+        indices += 3;
+    }
+    return (unsigned char*)indices;
+}
+
+Geometry* csgjs_atomicModelFromPolygons(const std::vector<csgjs_polygon> & polygons, Context* context, const PODVector<VertexElement>& elements)
+{
+    size_t p = 0;
+    SharedPtr<VertexBuffer> vb(new VertexBuffer(context));
+    SharedPtr<IndexBuffer> ib(new IndexBuffer(context));
+
+    unsigned vertexCount = 0;
+    unsigned indexCount = 0;
+    for (const auto& poly : polygons)
+    {
+        vertexCount += poly.vertices.size();
+        indexCount += (poly.vertices.size() - 2) * 3;
+    }
+
+    vb->SetShadowed(true);
+    vb->SetSize(vertexCount, elements);
+
+    ib->SetShadowed(true);
+    ib->SetSize(indexCount, vertexCount > std::numeric_limits<uint16_t>::max());
+
+    auto* vertexData = static_cast<unsigned char*>(vb->Lock(0, vb->GetVertexCount()));
+    auto* indexData = static_cast<unsigned char*>(ib->Lock(0, ib->GetIndexCount()));
+    bool bigIndices = ib->GetIndexSize() > sizeof(uint16_t);
+
+    for (const auto& poly : polygons)
+    {
+        for (const auto& vertex : poly.vertices)
+        {
+            for (unsigned k = 0; k < elements.Size(); k++)
+            {
+                const auto& el = elements.At(k);
+                switch (el.semantic_)
+                {
+                case SEM_POSITION:
+                {
+                    assert(el.type_ == TYPE_VECTOR3);
+                    *reinterpret_cast<Vector3*>(vertexData + el.offset_) = vertex.pos;
+                    break;
+                }
+                case SEM_NORMAL:
+                {
+                    assert(el.type_ == TYPE_VECTOR3);
+                    *reinterpret_cast<Vector3*>(vertexData + el.offset_) = vertex.normal;
+                    break;
+                }
+                case SEM_TEXCOORD:
+                {
+                    assert(el.type_ == TYPE_VECTOR2);
+                    *reinterpret_cast<Vector2*>(vertexData + el.offset_) = vertex.uv;
+                    break;
+                }
+                case SEM_COLOR:
+                {
+                    assert(el.type_ == TYPE_UBYTE4_NORM || el.type_ == TYPE_UBYTE4);
+                    *reinterpret_cast<unsigned*>(vertexData + el.offset_) = vertex.color;
+                    break;
+                }
+                case SEM_BINORMAL:  // TODO: recalculate
+                case SEM_TANGENT:  // TODO: recalculate
+                case SEM_BLENDWEIGHTS:  // TODO: ???
+                case SEM_BLENDINDICES:  // TODO: ???
+                case SEM_OBJECTINDEX:  // TODO: ???
+                default:
+                    break;
+                }
+            }
+            vertexData += vb->GetVertexSize();
+        }
+
+        if (bigIndices)
+            indexData = csgjs_set_indices<uint32_t>(indexData, poly.vertices.size(), p);
+        else
+            indexData = csgjs_set_indices<uint16_t>(indexData, poly.vertices.size(), p);
+
+        p += poly.vertices.size();
+    }
+
+    vb->Unlock();
+    ib->Unlock();
+
+    Geometry* geom = new Geometry(context);
+    geom->SetVertexBuffer(0, vb);
+    geom->SetIndexBuffer(ib);
+    geom->SetDrawRange(TRIANGLE_LIST, 0, ib->GetIndexCount());
+    return geom;
+}
+
+Geometry* csgjs_operation(Atomic::Node* a, Atomic::Node* b, csg_function fun)
+{
+    // TODO: more efficient way
+//    Vector3 pos_a, pos_b, scale_a, scale_b;
+//    Quaternion rot_a, rot_b;
+//    auto t = a->GetTransform();
+//    t.Decompose(pos_a, rot_a, scale_a);
+//    t = b->GetTransform();
+//    t.Decompose(pos_b, rot_b, scale_b);
+//    pos_b -= pos_a;
+//    rot_b = rot_b - rot_a;
+//    scale_b /= scale_a;
+//    auto b_transform =  Matrix3x4(pos_b, rot_b, scale_b);
+    auto b_transform = b->GetTransform() * a->GetTransform().Inverse();
+
+    csgjs_csgnode * A = new csgjs_csgnode(csgjs_modelToPolygons(a));
+    csgjs_csgnode * B = new csgjs_csgnode(csgjs_modelToPolygons(b, b_transform));
+    csgjs_csgnode * AB = fun(A, B);
+    std::vector<csgjs_polygon> polygons = AB->allPolygons();
+    delete A; A = 0;
+    delete B; B = 0;
+    delete AB; AB = 0;
+
+    return csgjs_atomicModelFromPolygons(polygons, a->GetContext(), a->GetComponent<StaticModel>()->GetLodGeometry(0, 0)->GetVertexBuffer(0)->GetElements());
+}
+
+Geometry* csgjs_union(Atomic::Node* a, Atomic::Node* b)
+{
+    return csgjs_operation(a, b, csg_union);
+}
+
+Geometry* csgjs_intersection(Atomic::Node* a, Atomic::Node* b)
+{
+    return csgjs_operation(a, b, csg_intersect);
+}
+
+Geometry* csgjs_difference(Atomic::Node* a, Atomic::Node* b)
 {
     return csgjs_operation(a, b, csg_subtract);
 }

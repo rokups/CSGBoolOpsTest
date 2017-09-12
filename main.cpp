@@ -49,6 +49,7 @@
 
 using namespace Atomic;
 using namespace std::placeholders;
+namespace ui = ImGui;
 
 class AtomicAsLibraryExample : public Application
 {
@@ -59,6 +60,7 @@ public:
     WeakPtr<Node> _camera;
     WeakPtr<Node> _a;
     WeakPtr<Node> _b;
+    WeakPtr<Node> _c;
     float pitch_;
     float yaw_;
 
@@ -103,25 +105,15 @@ public:
         _a = _scene->CreateChild();
         _a->CreateComponent<StaticModel>()->SetModel(context_->GetResourceCache()->GetResource<Model>("Models/Box.mdl"));
 
-//        _b = _scene->CreateChild();
-//        _b->CreateComponent<StaticModel>()->SetModel(context_->GetResourceCache()->GetResource<Model>("Models/Cone.mdl"));
-//        _b->SetScale(2);
+        _b = _scene->CreateChild();
+        _b->CreateComponent<StaticModel>()->SetModel(context_->GetResourceCache()->GetResource<Model>("Models/Cone.mdl"));
 
+        _c = _scene->CreateChild();
+        _c->CreateComponent<StaticModel>();
+        _c->SetPosition({2, 0, 0});
 
         _camera->SetPosition({0, 0, -5});
         _camera->LookAt(_a->GetPosition());
-
-        auto model_a = ToCSGJS(_a);
-//        auto model_b = ToCSGJS(_b);
-//        auto result = csgjs_difference(model_a, model_b);
-//
-//        _b->Remove();
-        auto new_geom = FromCSGJS(model_a);
-        auto new_model = new Model(context_);
-        new_model->SetNumGeometries(1);
-        new_model->SetGeometry(0, 0, new_geom);
-
-        _a->GetComponent<StaticModel>()->SetModel(new_model);
     }
 
     virtual void Stop()
@@ -135,114 +127,56 @@ public:
     }
     void OnSystemUI(VariantMap& args)
     {
-//        if (ImGui::Begin("Example"))
-//        {
-//            ImGui::Text("This example application is using AtomicGameEngine as CMake dependency consumed through add_subdirectory().");
-//        }
-//        ImGui::End();
-    }
-
-    Geometry* FromCSGJS(csgjs_model& model)
-    {
-        SharedPtr<VertexBuffer> vb(new VertexBuffer(context_));
-        SharedPtr<IndexBuffer> ib(new IndexBuffer(context_));
-        Geometry* geom(new Geometry(context_));
-
-        ib->SetShadowed(true);
-        ib->SetSize(model.indices.size(), true);
-        ib->SetData(&model.indices.front());
-
-        PODVector<VertexElement> elements;
-        elements.Push(VertexElement(TYPE_VECTOR3, SEM_POSITION, 0, false));
-        elements.Push(VertexElement(TYPE_VECTOR3, SEM_NORMAL, 0, false));
-        elements.Push(VertexElement(TYPE_VECTOR2, SEM_TEXCOORD, 0, false));
-
-        const auto vds = (3 + 3 + 2);
-        float* vertexData = new float[vds * model.vertices.size()];
-        for (auto i = 0; i < model.vertices.size(); i++)
+        ui::SetNextWindowSize({300, 250}, ImGuiSetCond_Once);
+        if (ui::Begin("Example"))
         {
-            vertexData[vds * i + 0] = model.vertices[i].pos.x;
-            vertexData[vds * i + 1] = model.vertices[i].pos.y;
-            vertexData[vds * i + 2] = model.vertices[i].pos.z;
-
-            vertexData[vds * i + 3] = model.vertices[i].normal.x;
-            vertexData[vds * i + 4] = model.vertices[i].normal.y;
-            vertexData[vds * i + 5] = model.vertices[i].normal.z;
-
-            vertexData[vds * i + 6] = model.vertices[i].uv.x;
-            vertexData[vds * i + 7] = model.vertices[i].uv.y;
-        }
-        vb->SetShadowed(true);
-        vb->SetSize(model.vertices.size(), elements);
-        vb->SetData(vertexData);
-
-        geom->SetVertexBuffer(0, vb);
-        geom->SetIndexBuffer(ib);
-        geom->SetDrawRange(TRIANGLE_LIST, 0, model.vertices.size());
-
-        return geom;
-    }
-
-    csgjs_model ToCSGJS(Node* node)
-    {
-        csgjs_model mdl{};
-        auto static_model = node->GetComponent<StaticModel>();
-        auto geom = static_model->GetLodGeometry(0, 0);
-
-        mdl.vertices.reserve(geom->GetVertexCount());
-        mdl.indices.reserve(geom->GetIndexCount());
-
-        auto vb = geom->GetVertexBuffer(0);
-        auto vertexData = vb->GetShadowData();
-        auto elements = vb->GetElements();
-        auto vertexSize = vb->GetVertexSize();
-
-        for (unsigned i = 0; i < vb->GetVertexCount(); i++)
-        {
-            csgjs_vertex vt{};
-
-            for (unsigned j = 0; j < elements.Size(); j++)
             {
-                const auto& el = elements.At(j);
-                switch (el.semantic_)
-                {
-                case SEM_POSITION:
-                {
-                    auto pos = reinterpret_cast<const Vector3*>(vertexData + el.offset_ + vertexSize * i);
-                    vt.pos.x = pos->x_;
-                    vt.pos.y = pos->y_;
-                    vt.pos.z = pos->z_;
-                    break;
-                }
-                case SEM_NORMAL:
-                {
-                    auto normal = reinterpret_cast<const Vector3*>(vertexData + el.offset_ + vertexSize * i);
-                    vt.normal.x = normal->x_;
-                    vt.normal.y = normal->y_;
-                    vt.normal.z = normal->z_;
-                    break;
-                }
-                case SEM_TEXCOORD:
-                {
-                    auto uv = reinterpret_cast<const Vector2*>(vertexData + el.offset_ + vertexSize * i);
-                    vt.uv.x = uv->x_;
-                    vt.uv.y = uv->y_;
-                    vt.uv.z = 0;
-                    break;
-                }
-                default:
-                    break;
-                }
+                auto pos = _a->GetPosition();
+                if (ui::DragFloat3("A Pos", const_cast<float*>(pos.Data()), 0.05f))
+                    _a->SetPosition(pos);
+
+                auto rot = _a->GetRotation().EulerAngles();
+                if (ui::DragFloat3("A Rot", const_cast<float*>(rot.Data()), 0.05f))
+                    _a->SetRotation(Quaternion(rot.x_, rot.y_, rot.z_));
+
+                auto scale = _a->GetScale();
+                if (ui::DragFloat3("A Scl", const_cast<float*>(scale.Data()), 0.05f))
+                    _a->SetScale(scale);
             }
-            mdl.vertices.push_back(vt);
+
+            {
+                auto pos = _b->GetPosition();
+                if (ui::DragFloat3("B Pos", const_cast<float*>(pos.Data()), 0.05f))
+                    _b->SetPosition(pos);
+
+                auto rot = _b->GetRotation().EulerAngles();
+                if (ui::DragFloat3("B Rot", const_cast<float*>(rot.Data()), 0.05f))
+                    _b->SetRotation(Quaternion(rot.x_, rot.y_, rot.z_));
+
+                auto scale = _b->GetScale();
+                if (ui::DragFloat3("B Scl", const_cast<float*>(scale.Data()), 0.05f))
+                    _b->SetScale(scale);
+            }
+
+            Geometry* new_geom = nullptr;
+            if (ui::Button("Union"))
+                new_geom = csgjs_union(_a, _b);
+
+            if (ui::Button("Intersection"))
+                new_geom = csgjs_intersection(_a, _b);
+
+            if (ui::Button("Difference"))
+                new_geom = csgjs_difference(_a, _b);
+
+            if (new_geom)
+            {
+                auto new_model = new Model(context_);
+                new_model->SetNumGeometries(1);
+                new_model->SetGeometry(0, 0, new_geom);
+                _c->GetComponent<StaticModel>()->SetModel(new_model);
+            }
         }
-
-        auto ib = geom->GetIndexBuffer();
-        auto indexes = (uint16_t*)ib->GetShadowData();
-        for (unsigned i = 0; i < ib->GetIndexCount(); i++)
-            mdl.indices.push_back((int)indexes[i]);
-
-        return mdl;
+        ui::End();
     }
 
     void MoveCamera(float timeStep)
