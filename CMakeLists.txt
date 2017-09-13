@@ -32,7 +32,7 @@ set(ATOMIC_EDITOR 0 CACHE BOOL "" FORCE)
 add_subdirectory(AtomicGameEngine)
 # Define our own project
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-set(SOURCE_FILES main.cpp CSGJS.h CSGJS.cpp)
+set(SOURCE_FILES main.cpp CSGJS.h CSGJS.cpp ImGuizmo.cpp ImGuizmo.h)
 add_executable(AtomicAsLibraryExample WIN32 ${SOURCE_FILES})
 target_compile_definitions(AtomicAsLibraryExample PRIVATE -DCMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 # Link engine to our project. It pulls in engine defines and include directories automatically.

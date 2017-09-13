@@ -43,9 +43,10 @@
 #include <Atomic/Core/StringUtils.h>
 #include <Atomic/Engine/EngineDefs.h>
 #include <Atomic/Graphics/Geometry.h>
+#include <Atomic/IO/Log.h>
 
 #include "CSGJS.h"
-
+#include "ImGuizmo.h"
 
 using namespace Atomic;
 using namespace std::placeholders;
@@ -73,6 +74,7 @@ public:
         engineParameters_[EP_WINDOW_HEIGHT]  = 768;
         engineParameters_[EP_FULL_SCREEN]    = false;
         engineParameters_[EP_RESOURCE_PATHS] = "CoreData;Data";
+        engineParameters_[EP_LOG_LEVEL]      = LOG_DEBUG;
 
         // This is a dirty hack to make example run out of the box. You likely want to fix this.
         engineParameters_[EP_RESOURCE_PREFIX_PATHS] = CMAKE_SOURCE_DIR "/AtomicGameEngine/Resources;" CMAKE_SOURCE_DIR;
@@ -100,7 +102,7 @@ public:
 
         auto light = _camera->CreateComponent<Light>();
         light->SetColor(Color::WHITE);
-        light->SetLightType(LIGHT_DIRECTIONAL);
+        light->SetLightType(LIGHT_POINT);
 
         _a = _scene->CreateChild();
         _a->CreateComponent<StaticModel>()->SetModel(context_->GetResourceCache()->GetResource<Model>("Models/Box.mdl"));
@@ -114,6 +116,8 @@ public:
 
         _camera->SetPosition({0, 0, -5});
         _camera->LookAt(_a->GetPosition());
+
+        ImGuizmo::Enable(true);
     }
 
     virtual void Stop()
@@ -158,25 +162,43 @@ public:
                     _b->SetScale(scale);
             }
 
-            Geometry* new_geom = nullptr;
+            PODVector<Geometry*> geoms;
             if (ui::Button("Union"))
-                new_geom = csgjs_union(_a, _b);
+                geoms.Push(csgjs_union(_a, _b));
 
             if (ui::Button("Intersection"))
-                new_geom = csgjs_intersection(_a, _b);
+                geoms.Push(csgjs_intersection(_a, _b));
 
             if (ui::Button("Difference"))
-                new_geom = csgjs_difference(_a, _b);
+                geoms.Push(csgjs_difference(_a, _b));
 
-            if (new_geom)
+            if (ui::Button("Difference Disjoint"))
+                csgjs_difference(_a, _b, geoms);
+
+            if (!geoms.Empty())
             {
                 auto new_model = new Model(context_);
-                new_model->SetNumGeometries(1);
-                new_model->SetGeometry(0, 0, new_geom);
+                new_model->SetNumGeometries(geoms.Size());
+                auto index = 0;
+                for (auto new_geom : geoms)
+                    new_model->SetGeometry(index++, 0, new_geom);
                 _c->GetComponent<StaticModel>()->SetModel(new_model);
             }
+
         }
         ui::End();
+
+        ImGuizmo::BeginFrame();
+
+        auto m = _a->GetTransform().ToMatrix4();
+
+//        auto view = _camera->GetComponent<Camera>()->GetView().ToMatrix4();
+//        auto projection = _camera->GetComponent<Camera>()->GetProjection();
+//        ImGuizmo::DrawCube(view.Data(), projection.Data(), const_cast<float*>(m.Data()));
+
+        EditTransform(_camera->GetComponent<Camera>(), m);
+        if (ImGuizmo::IsUsing())
+            _a->SetTransform(m);
     }
 
     void MoveCamera(float timeStep)
@@ -211,6 +233,78 @@ public:
         if (input->GetKeyDown(KEY_D))
             _camera->Translate(Vector3::RIGHT * MOVE_SPEED * timeStep);
     }
+
+    void EditTransform(const Camera* camera, Matrix4& matrix)
+    {
+        static ImGuizmo::OPERATION mCurrentGizmoOperation(ImGuizmo::ROTATE);
+        static ImGuizmo::MODE mCurrentGizmoMode(ImGuizmo::WORLD);
+        if (ImGui::IsKeyPressed(90))
+            mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+        if (ImGui::IsKeyPressed(69))
+            mCurrentGizmoOperation = ImGuizmo::ROTATE;
+        if (ImGui::IsKeyPressed(82)) // r Key
+            mCurrentGizmoOperation = ImGuizmo::SCALE;
+        if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE))
+            mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE))
+            mCurrentGizmoOperation = ImGuizmo::ROTATE;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE))
+            mCurrentGizmoOperation = ImGuizmo::SCALE;
+        float matrixTranslation[3], matrixRotation[3], matrixScale[3];
+        ImGuizmo::DecomposeMatrixToComponents(matrix.Data(), matrixTranslation, matrixRotation, matrixScale);
+        ImGui::DragFloat3("Tr", matrixTranslation, 3);
+        ImGui::DragFloat3("Rt", matrixRotation, 3);
+        ImGui::DragFloat3("Sc", matrixScale, 3);
+        ImGuizmo::RecomposeMatrixFromComponents(matrixTranslation, matrixRotation, matrixScale,
+                                                const_cast<float*>(matrix.Data()));
+
+        if (mCurrentGizmoOperation != ImGuizmo::SCALE)
+        {
+            if (ImGui::RadioButton("Local", mCurrentGizmoMode == ImGuizmo::LOCAL))
+                mCurrentGizmoMode = ImGuizmo::LOCAL;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("World", mCurrentGizmoMode == ImGuizmo::WORLD))
+                mCurrentGizmoMode = ImGuizmo::WORLD;
+        }
+        static bool useSnap(false);
+        if (ImGui::IsKeyPressed(83))
+            useSnap = !useSnap;
+        ImGui::Checkbox("", &useSnap);
+        ImGui::SameLine();
+        Vector3 snap;
+        switch (mCurrentGizmoOperation)
+        {
+        case ImGuizmo::TRANSLATE:
+            snap = config.mSnapTranslation;
+            ImGui::InputFloat3("Snap", &snap.x_);
+            break;
+        case ImGuizmo::ROTATE:
+            snap = config.mSnapRotation;
+            ImGui::InputFloat("Angle Snap", &snap.x_);
+            break;
+        case ImGuizmo::SCALE:
+            snap = config.mSnapScale;
+            ImGui::InputFloat("Scale Snap", &snap.x_);
+            break;
+        }
+        ImGuiIO& io = ImGui::GetIO();
+        ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+
+        auto view = camera->GetView().ToMatrix4();
+        auto projection = camera->GetProjection();
+
+        ImGuizmo::Manipulate(view.Data(), projection.Data(), mCurrentGizmoOperation, mCurrentGizmoMode,
+                             const_cast<float*>(matrix.Data()), NULL, useSnap ? &snap.x_ : NULL);
+    }
+
+    struct
+    {
+        Vector3 mSnapTranslation;
+        Vector3 mSnapRotation;
+        Vector3 mSnapScale;
+    } config;
 };
 
 ATOMIC_DEFINE_APPLICATION_MAIN(AtomicAsLibraryExample);
