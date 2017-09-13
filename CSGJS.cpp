@@ -2,6 +2,8 @@
 #include <Atomic/Graphics/StaticModel.h>
 #include <Atomic/Graphics/VertexBuffer.h>
 #include <Atomic/Graphics/IndexBuffer.h>
+#include <Atomic/Core/Context.h>
+#include <Atomic/IO/Log.h>
 
 using namespace Atomic;
 
@@ -42,6 +44,20 @@ struct csgjs_polygon
 
     csgjs_polygon();
     csgjs_polygon(const std::vector<csgjs_vertex> & list);
+
+    // Returns true if two polygons share at least one vertex.
+    bool is_adjacent(const csgjs_polygon& other, float bias=0.0f) const
+    {
+        for (const auto& v1 : vertices)
+        {
+            for (const auto& v2 : other.vertices)
+            {
+                if (Abs((v1.pos - v2.pos).Length()) <= bias)
+                    return true;
+            }
+        }
+        return false;
+    }
 };
 
 // Holds a node in a BSP tree. A BSP tree is built from a collection of polygons
@@ -540,7 +556,7 @@ csgjs_model csgjs_difference(const csgjs_model & a, const csgjs_model & b)
     return csgjs_operation(a, b, csg_subtract);
 }
 
-std::vector<csgjs_polygon> csgjs_modelToPolygons(Atomic::Node* node, const Matrix3x4& t=Matrix3x4::IDENTITY)
+std::vector<csgjs_polygon> csgjs_modelToPolygons(Node* node, const Matrix3x4& t=Matrix3x4::IDENTITY)
 {
     std::vector<csgjs_polygon> list;
 
@@ -580,13 +596,13 @@ std::vector<csgjs_polygon> csgjs_modelToPolygons(Atomic::Node* node, const Matri
                 case SEM_POSITION:
                 {
                     assert(el.type_ == TYPE_VECTOR3);
-                    vertex.pos = t.Rotation() * (t.Translation() + (*reinterpret_cast<Vector3*>(vertexInData + el.offset_)) * t.Scale());
+                    vertex.pos = t * Vector4(*reinterpret_cast<Vector3*>(vertexInData + el.offset_), 1);
                     break;
                 }
                 case SEM_NORMAL:
                 {
                     assert(el.type_ == TYPE_VECTOR3);
-                    vertex.normal = t.Rotation() * (*reinterpret_cast<Vector3*>(vertexInData + el.offset_));
+                    vertex.normal = t * Vector4(*reinterpret_cast<Vector3*>(vertexInData + el.offset_), 0);
                     break;
                 }
                 case SEM_TEXCOORD:
@@ -626,108 +642,189 @@ inline unsigned char* csgjs_set_indices(void* indexData, size_t numVertices, siz
     return (unsigned char*)indices;
 }
 
-Geometry* csgjs_atomicModelFromPolygons(const std::vector<csgjs_polygon> & polygons, Context* context, const PODVector<VertexElement>& elements)
+struct PolygonBucket
 {
-    size_t p = 0;
-    SharedPtr<VertexBuffer> vb(new VertexBuffer(context));
-    SharedPtr<IndexBuffer> ib(new IndexBuffer(context));
-
     unsigned vertexCount = 0;
     unsigned indexCount = 0;
-    for (const auto& poly : polygons)
+    Vector<csgjs_polygon> polygons;
+};
+
+bool Contains(const PolygonBucket& container, const csgjs_polygon& polygon, float bias)
+{
+    for (const auto& container_polygon : container.polygons)
     {
-        vertexCount += poly.vertices.size();
-        indexCount += (poly.vertices.size() - 2) * 3;
+        if (container_polygon.is_adjacent(polygon, bias))
+            return true;
     }
+    return false;
+}
 
-    vb->SetShadowed(true);
-    vb->SetSize(vertexCount, elements);
+PODVector<Geometry*> csgjs_atomicModelFromPolygons(const std::vector<csgjs_polygon>& polygons, Node* node, bool disjoint=false)
+{
+    Context* context = node->GetContext();
+    const PODVector<VertexElement>& elements = node->GetComponent<StaticModel>()->GetLodGeometry(0, 0)->GetVertexBuffer(0)->GetElements();
 
-    ib->SetShadowed(true);
-    ib->SetSize(indexCount, vertexCount > std::numeric_limits<uint16_t>::max());
+    const float bias = 0.0001f;  // If vertices are apart less than this distance they will be considered a same vertex.
+    Vector<PolygonBucket> buckets;
 
-    auto* vertexData = static_cast<unsigned char*>(vb->Lock(0, vb->GetVertexCount()));
-    auto* indexData = static_cast<unsigned char*>(ib->Lock(0, ib->GetIndexCount()));
-    bool bigIndices = ib->GetIndexSize() > sizeof(uint16_t);
+    // Non-disjoint geometries will reside in single bucket.
+    if (!disjoint)
+        buckets.Resize(1);
 
     for (const auto& poly : polygons)
     {
-        for (const auto& vertex : poly.vertices)
+        // Count vertices and indices.
+        auto vertexCount = poly.vertices.size();
+        auto indexCount = (poly.vertices.size() - 2) * 3;
+
+        PolygonBucket* target_bucket = nullptr;
+        if (disjoint)
         {
-            for (unsigned k = 0; k < elements.Size(); k++)
+            // Sort all vertex positions of adjacent polygons into separate buckets. Used for splitting objects into
+            // separate geometries.
+            for (auto& bucket : buckets)
             {
-                const auto& el = elements.At(k);
-                switch (el.semantic_)
+                if (Contains(bucket, poly, bias))
                 {
-                case SEM_POSITION:
-                {
-                    assert(el.type_ == TYPE_VECTOR3);
-                    *reinterpret_cast<Vector3*>(vertexData + el.offset_) = vertex.pos;
-                    break;
-                }
-                case SEM_NORMAL:
-                {
-                    assert(el.type_ == TYPE_VECTOR3);
-                    *reinterpret_cast<Vector3*>(vertexData + el.offset_) = vertex.normal;
-                    break;
-                }
-                case SEM_TEXCOORD:
-                {
-                    assert(el.type_ == TYPE_VECTOR2);
-                    *reinterpret_cast<Vector2*>(vertexData + el.offset_) = vertex.uv;
-                    break;
-                }
-                case SEM_COLOR:
-                {
-                    assert(el.type_ == TYPE_UBYTE4_NORM || el.type_ == TYPE_UBYTE4);
-                    *reinterpret_cast<unsigned*>(vertexData + el.offset_) = vertex.color;
-                    break;
-                }
-                case SEM_BINORMAL:  // TODO: recalculate
-                case SEM_TANGENT:  // TODO: recalculate
-                case SEM_BLENDWEIGHTS:  // TODO: ???
-                case SEM_BLENDINDICES:  // TODO: ???
-                case SEM_OBJECTINDEX:  // TODO: ???
-                default:
+                    target_bucket = &bucket;
                     break;
                 }
             }
-            vertexData += vb->GetVertexSize();
+
+            if (target_bucket == nullptr)
+            {
+                buckets.Push(PolygonBucket());
+                target_bucket = &buckets.Back();
+            }
         }
-
-        if (bigIndices)
-            indexData = csgjs_set_indices<uint32_t>(indexData, poly.vertices.size(), p);
         else
-            indexData = csgjs_set_indices<uint16_t>(indexData, poly.vertices.size(), p);
+            target_bucket = &buckets.Front();
 
-        p += poly.vertices.size();
+        target_bucket->vertexCount += vertexCount;
+        target_bucket->indexCount += indexCount;
+        target_bucket->polygons.Push(poly);
     }
 
-    vb->Unlock();
-    ib->Unlock();
+    if (disjoint)
+    {
+        // We most likely ended up with too many separate buckets due to polygons being not sorted. We iterate through
+        // existing buckets and merge them if they share any vertices.
+        size_t last_num_buckets = buckets.Size() + 1;
+        while (last_num_buckets != buckets.Size())
+        {
+            last_num_buckets = buckets.Size();
 
-    Geometry* geom = new Geometry(context);
-    geom->SetVertexBuffer(0, vb);
-    geom->SetIndexBuffer(ib);
-    geom->SetDrawRange(TRIANGLE_LIST, 0, ib->GetIndexCount());
-    return geom;
+            for (auto it = buckets.Begin(); it != buckets.End(); it++)
+            {
+                for (auto jt = buckets.Begin(); jt != buckets.End(); jt++)
+                {
+                    if (it != jt)
+                    {
+                        for (const auto& polygon : (*jt).polygons)
+                        {
+                            if (Contains(*it, polygon, bias))
+                            {
+                                (*it).indexCount += (*jt).indexCount;
+                                (*it).vertexCount += (*jt).vertexCount;
+                                (*it).polygons.Push((*jt).polygons);
+                                buckets.Erase(jt);
+                                it = buckets.End() - 1;
+                                jt = buckets.End() - 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    PODVector<Geometry*> result;
+    for (const auto& bucket : buckets)
+    {
+        size_t p = 0;
+        SharedPtr<VertexBuffer> vb(new VertexBuffer(context));
+        SharedPtr<IndexBuffer> ib(new IndexBuffer(context));
+
+        vb->SetShadowed(true);
+        vb->SetSize(bucket.vertexCount, elements);
+
+        ib->SetShadowed(true);
+        ib->SetSize(bucket.indexCount, bucket.vertexCount > std::numeric_limits<uint16_t>::max());
+
+        auto* vertexData = static_cast<unsigned char*>(vb->Lock(0, vb->GetVertexCount()));
+        auto* indexData = static_cast<unsigned char*>(ib->Lock(0, ib->GetIndexCount()));
+        bool bigIndices = ib->GetIndexSize() > sizeof(uint16_t);
+
+        for (const auto& poly : bucket.polygons)
+        {
+            for (const auto& vertex : poly.vertices)
+            {
+                for (unsigned k = 0; k < elements.Size(); k++)
+                {
+                    const auto& el = elements.At(k);
+                    switch (el.semantic_)
+                    {
+                    case SEM_POSITION:
+                    {
+                        assert(el.type_ == TYPE_VECTOR3);
+                        *reinterpret_cast<Vector3*>(vertexData + el.offset_) = vertex.pos;
+                        break;
+                    }
+                    case SEM_NORMAL:
+                    {
+                        assert(el.type_ == TYPE_VECTOR3);
+                        *reinterpret_cast<Vector3*>(vertexData + el.offset_) = vertex.normal;
+                        break;
+                    }
+                    case SEM_TEXCOORD:
+                    {
+                        assert(el.type_ == TYPE_VECTOR2);
+                        *reinterpret_cast<Vector2*>(vertexData + el.offset_) = vertex.uv;
+                        break;
+                    }
+                    case SEM_COLOR:
+                    {
+                        assert(el.type_ == TYPE_UBYTE4_NORM || el.type_ == TYPE_UBYTE4);
+                        *reinterpret_cast<unsigned*>(vertexData + el.offset_) = vertex.color;
+                        break;
+                    }
+                    case SEM_BINORMAL:  // TODO: recalculate
+                    case SEM_TANGENT:  // TODO: recalculate
+                    case SEM_BLENDWEIGHTS:  // TODO: ???
+                    case SEM_BLENDINDICES:  // TODO: ???
+                    case SEM_OBJECTINDEX:  // TODO: ???
+                    default:
+                        break;
+                    }
+                }
+                vertexData += vb->GetVertexSize();
+            }
+
+            if (bigIndices)
+                indexData = csgjs_set_indices<uint32_t>(indexData, poly.vertices.size(), p);
+            else
+                indexData = csgjs_set_indices<uint16_t>(indexData, poly.vertices.size(), p);
+
+            p += poly.vertices.size();
+        }
+
+        vb->Unlock();
+        ib->Unlock();
+
+        Geometry* geom = new Geometry(context);
+        geom->SetVertexBuffer(0, vb);
+        geom->SetIndexBuffer(ib);
+        geom->SetDrawRange(TRIANGLE_LIST, 0, ib->GetIndexCount());
+        result.Push(geom);
+    }
+    context->GetLog()->Write(LOG_DEBUG, ToString("Num geometries: %d", result.Size()));
+    return result;
 }
 
-Geometry* csgjs_operation(Atomic::Node* a, Atomic::Node* b, csg_function fun)
+PODVector<Geometry*> csgjs_operation(Node* a, Node* b, csg_function fun, bool disjoint=false)
 {
-    // TODO: more efficient way
-//    Vector3 pos_a, pos_b, scale_a, scale_b;
-//    Quaternion rot_a, rot_b;
-//    auto t = a->GetTransform();
-//    t.Decompose(pos_a, rot_a, scale_a);
-//    t = b->GetTransform();
-//    t.Decompose(pos_b, rot_b, scale_b);
-//    pos_b -= pos_a;
-//    rot_b = rot_b - rot_a;
-//    scale_b /= scale_a;
-//    auto b_transform =  Matrix3x4(pos_b, rot_b, scale_b);
     auto b_transform = b->GetTransform() * a->GetTransform().Inverse();
-
     csgjs_csgnode * A = new csgjs_csgnode(csgjs_modelToPolygons(a));
     csgjs_csgnode * B = new csgjs_csgnode(csgjs_modelToPolygons(b, b_transform));
     csgjs_csgnode * AB = fun(A, B);
@@ -736,20 +833,25 @@ Geometry* csgjs_operation(Atomic::Node* a, Atomic::Node* b, csg_function fun)
     delete B; B = 0;
     delete AB; AB = 0;
 
-    return csgjs_atomicModelFromPolygons(polygons, a->GetContext(), a->GetComponent<StaticModel>()->GetLodGeometry(0, 0)->GetVertexBuffer(0)->GetElements());
+    return csgjs_atomicModelFromPolygons(polygons, a, disjoint);
 }
 
-Geometry* csgjs_union(Atomic::Node* a, Atomic::Node* b)
+Geometry* csgjs_union(Node* a, Node* b)
 {
-    return csgjs_operation(a, b, csg_union);
+    return csgjs_operation(a, b, csg_union).Front();
 }
 
-Geometry* csgjs_intersection(Atomic::Node* a, Atomic::Node* b)
+Geometry* csgjs_intersection(Node* a, Node* b)
 {
-    return csgjs_operation(a, b, csg_intersect);
+    return csgjs_operation(a, b, csg_intersect).Front();
 }
 
-Geometry* csgjs_difference(Atomic::Node* a, Atomic::Node* b)
+Geometry* csgjs_difference(Node* a, Node* b)
 {
-    return csgjs_operation(a, b, csg_subtract);
+    return csgjs_operation(a, b, csg_subtract).Front();
+}
+
+void csgjs_difference(Node* a, Node* b, PODVector<Geometry*>& geometries)
+{
+    geometries = csgjs_operation(a, b, csg_subtract, true);
 }

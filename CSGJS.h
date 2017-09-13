@@ -48,4 +48,7 @@ csgjs_model csgjs_difference(const csgjs_model & a, const csgjs_model & b);
 
 Atomic::Geometry* csgjs_union(Atomic::Node* a, Atomic::Node* b);
 Atomic::Geometry* csgjs_intersection(Atomic::Node* a, Atomic::Node* b);
+// Gets the difference as single geometry, even if some parts are disjoint.
 Atomic::Geometry* csgjs_difference(Atomic::Node* a, Atomic::Node* b);
+// Gets the difference of two node geometries, returning separate geometries for disjoint parts.
+void csgjs_difference(Atomic::Node* a, Atomic::Node* b, Atomic::PODVector<Atomic::Geometry*>& geometries);
